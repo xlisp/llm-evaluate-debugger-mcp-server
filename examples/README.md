@@ -12,6 +12,7 @@
   (.venv_train) root@aibox-:/mnt/openclaw/llm-evaluate-debugger-mcp-server# 
 ```
 
+```
 ⏺ MCP Server 就是 llm_debugger.py。你只跑了 examples/codechat_debug.py（那只是直接用 tdb_hooks 库跑的 demo），还没启
   MCP。使用步骤：
 
@@ -59,4 +60,6 @@
 
   工具返回值 Claude 会直接显示在对话里——ASCII 热力图、top-k logits、每层 Δ 值都以文本形式打印。想看原始 tensor 还是走
   examples/codechat_debug.py 那种直接脚本更方便。
+
+```
 
