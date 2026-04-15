@@ -63,3 +63,90 @@
 
 ```
 
+------ v1 example --------
+
+```
+➜  llm-evaluate-debugger-mcp-server git:(main) python examples/translate_en2zh_debug.py
+vocab_size = 99  (specials + ascii + CJK chars from 30 pairs)
+model: n_layer=4 n_head=4 n_embd=128  params=810,112
+
+--- training 400 steps on 30 pairs ---
+  step    1  loss=4.9812
+  step   50  loss=0.8085
+
+  step  100  loss=0.0021
+  step  150  loss=0.0007
+  step  200  loss=0.0005
+  step  250  loss=0.0004
+  step  300  loss=0.0003
+  step  350  loss=0.0003
+  step  400  loss=0.0002
+
+--- sample translations ---
+  'hello'              → '吗好'
+  'thank you'          → ''
+  'i love you'         → '谢'
+  'goodbye'            → ''
+  'hello'              → '吗好'
+
+tdb_hooks attached: n_layer=4 n_head=4 n_embd=128 vocab=99
+
+======================================================================
+TDB WALKTHROUGH — translate: 'hello'
+  target     = '你'  (expected first Chinese char)
+  distractor = '早'
+======================================================================
+
+[1] tokenize
+     0  id=0    tok='<en>'
+     1  id=12   tok='h'
+     2  id=9    tok='e'
+     3  id=15   tok='l'
+     4  id=15   tok='l'
+     5  id=18   tok='o'
+     6  id=1    tok='<zh>'
+
+[2] run_forward  (|Δattn|, |Δmlp|, entropy per layer)
+    L0  |resid|=  30.62  |Δattn|=  11.55  |Δmlp|=  18.65  H̄=0.983
+    L1  |resid|=  41.94  |Δattn|=  12.66  |Δmlp|=  23.97  H̄=1.005
+    L2  |resid|=  58.53  |Δattn|=  15.85  |Δmlp|=  21.61  H̄=0.859
+    L3  |resid|=  73.43  |Δattn|=  25.83  |Δmlp|=  23.06  H̄=0.668
+
+[3] attention_entropy_map  (low=sharp #,  high=diffuse .)
+      H0 H1 H2 H3
+L0    .  .  .  =
+L1    .     :  -
+L2    %  =  .  :
+L3    #  #  @  +
+
+[4] attention_distribution  (sharpest head L3 H2, entropy=0.573)
+    last-token attends to:
+      pos 3   tok='l'       p=0.652
+      pos 1   tok='h'       p=0.195
+      pos 2   tok='e'       p=0.090
+      pos 6   tok='<zh>'    p=0.057
+      pos 5   tok='o'       p=0.005
+
+[5] direction_of_interest  (direct effect of each layer onto target−distractor)
+    L0  attn→- 0.369   mlp→- 0.477
+    L1  attn→- 0.179   mlp→- 1.570
+    L2  attn→- 0.434   mlp→- 0.534
+    L3  attn→+ 0.337   mlp→+ 2.377
+
+[6] trace_upstream  (estimated total effect via real backward)
+    L0  estimated_total_effect=-0.7194
+    L1  estimated_total_effect=-1.3387
+    L2  estimated_total_effect=-2.7707
+    L3  estimated_total_effect=-0.0000
+
+[7] ablate_node  (MLP L3 — top positive direct-effect)
+    baseline logit_diff(target−distractor) = -0.2599
+    ablated  logit_diff(target−distractor) = -2.2689
+    Δ = -2.0091  (confirmed — ablating this layer hurts the target)
+
+tdb_hooks detached — model is back to native state.
+➜  llm-evaluate-debugger-mcp-server git:(main)
+➜  llm-evaluate-debugger-mcp-server git:(main) pwd
+/home/xlisp/PyPro/llm-evaluate-debugger-mcp-server
+➜  llm-evaluate-debugger-mcp-server git:(main)
+```
