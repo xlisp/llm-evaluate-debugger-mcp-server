@@ -1,0 +1,205 @@
+➜  llm-evaluate-debugger-mcp-server git:(main) python examples/translate_en2zh_debug.py --large --save en2zh.pt --max-pairs 100000 --epochs 3
+[env] device=cuda  torch=2.3.1+cu118  cuda=True
+[data] loading Helsinki-NLP/opus-100/en-zh split=train[:200000] ...
+README.md: 65.4kB [00:00, 42.6MB/s]
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+en-zh/test-00000-of-00001.parquet: 100%|███████████████████████████████████████████████████████| 355k/355k [00:04<00:00, 88.1kB/s]
+en-zh/train-00000-of-00001.parquet: 100%|██████████████████████████████████████████████████████| 143M/143M [00:28<00:00, 5.06MB/s]
+en-zh/validation-00000-of-00001.parquet: 100%|██████████████████████████████████████████████████| 359k/359k [00:01<00:00, 294kB/s]
+Generating test split: 100%|████████████████████████████████████████████████████████| 2000/2000 [00:00<00:00, 48283.09 examples/s]
+Generating train split: 100%|████████████████████████████████████████████████| 1000000/1000000 [00:02<00:00, 466643.37 examples/s]
+Generating validation split: 100%|█████████████████████████████████████████████████| 2000/2000 [00:00<00:00, 217569.46 examples/s]
+[data] kept 100,000 filtered pairs
+[tok] vocab_size=5952
+[model] n_layer=6 n_head=8 n_embd=384 block=128  params=12,982,272
+[train] N=100,000  train=98,000  val=2,000  batch=64  epochs=3  lr=0.0003
+  ep   1  step      1/4593  loss=8.8776  lr=3.00e-04  2.1 it/s
+  ep   1  step     50/4593  loss=6.0140  lr=3.00e-04  6.1 it/s
+  ep   1  step    100/4593  loss=5.8884  lr=3.00e-04  6.2 it/s
+  ep   1  step    150/4593  loss=6.0172  lr=2.99e-04  6.2 it/s
+  ep   1  step    200/4593  loss=5.9518  lr=2.99e-04  6.2 it/s
+  ep   1  step    250/4593  loss=6.0399  lr=2.98e-04  6.3 it/s
+  ep   1  step    300/4593  loss=5.9660  lr=2.97e-04  6.3 it/s
+  ep   1  step    350/4593  loss=6.2425  lr=2.96e-04  6.3 it/s
+  ep   1  step    400/4593  loss=5.8235  lr=2.94e-04  6.3 it/s
+  ep   1  step    450/4593  loss=5.9028  lr=2.93e-04  6.3 it/s
+  ep   1  step    500/4593  loss=5.7729  lr=2.91e-04  6.3 it/s
+  ep   1  step    550/4593  loss=6.0960  lr=2.90e-04  6.3 it/s
+  ep   1  step    600/4593  loss=5.7393  lr=2.88e-04  6.3 it/s
+  ep   1  step    650/4593  loss=5.6553  lr=2.85e-04  6.3 it/s
+  ep   1  step    700/4593  loss=5.6512  lr=2.83e-04  6.3 it/s
+  ep   1  step    750/4593  loss=5.6882  lr=2.81e-04  6.3 it/s
+  ep   1  step    800/4593  loss=5.4936  lr=2.78e-04  6.3 it/s
+  ep   1  step    850/4593  loss=5.3253  lr=2.75e-04  6.3 it/s
+  ep   1  step    900/4593  loss=5.5429  lr=2.72e-04  6.3 it/s
+  ep   1  step    950/4593  loss=5.1825  lr=2.69e-04  6.3 it/s
+  ep   1  step   1000/4593  loss=5.3906  lr=2.66e-04  6.3 it/s
+    sample  'sixty-first session'          → '第. 第. 20000010//////////////////'
+    sample  'oh, baby.'                    → '- 我是'
+    sample  '- lucinda?'                   → '- 第. 第000.'
+    sample  'introduction'                 → '第. 第1011'
+    sample  'eric topol: the wireless future of medicine' → '我们们们们们有的的'
+  ep   1  step   1050/4593  loss=5.3838  lr=2.63e-04  6.2 it/s
+  ep   1  step   1100/4593  loss=5.4500  lr=2.60e-04  6.3 it/s
+  ep   1  step   1150/4593  loss=5.0264  lr=2.56e-04  6.3 it/s
+  ep   1  step   1200/4593  loss=5.2654  lr=2.52e-04  6.2 it/s
+  ep   1  step   1250/4593  loss=5.1416  lr=2.48e-04  6.2 it/s
+  ep   1  step   1300/4593  loss=5.0769  lr=2.45e-04  6.2 it/s
+  ep   1  step   1350/4593  loss=5.1797  lr=2.40e-04  6.2 it/s
+  ep   1  step   1400/4593  loss=5.4893  lr=2.36e-04  6.2 it/s
+  ep   1  step   1450/4593  loss=5.3057  lr=2.32e-04  6.2 it/s
+  ep   1  step   1500/4593  loss=4.9453  lr=2.28e-04  6.2 it/s
+  [epoch 1] val_loss=5.1458
+  ep   2  step   1550/4593  loss=5.4458  lr=2.23e-04  6.2 it/s
+  ep   2  step   1600/4593  loss=5.1778  lr=2.19e-04  6.2 it/s
+  ep   2  step   1650/4593  loss=5.0169  lr=2.14e-04  6.2 it/s
+  ep   2  step   1700/4593  loss=4.8912  lr=2.10e-04  6.2 it/s
+  ep   2  step   1750/4593  loss=5.1529  lr=2.05e-04  6.2 it/s
+  ep   2  step   1800/4593  loss=4.9198  lr=2.00e-04  6.2 it/s
+  ep   2  step   1850/4593  loss=4.9961  lr=1.95e-04  6.2 it/s
+  ep   2  step   1900/4593  loss=5.2925  lr=1.90e-04  6.2 it/s
+  ep   2  step   1950/4593  loss=4.8634  lr=1.85e-04  6.2 it/s
+  ep   2  step   2000/4593  loss=4.8142  lr=1.80e-04  6.2 it/s
+    sample  'sixty-first session'          → '第. 第. 第年届'
+    sample  'oh, baby.'                    → '- 我们的'
+    sample  '- lucinda?'                   → '- 你们的？'
+    sample  'introduction'                 → '第. 导'
+    sample  'eric topol: the wireless future of medicine' → '1. 联合议的国国的'
+  ep   2  step   2050/4593  loss=4.9714  lr=1.75e-04  6.2 it/s
+  ep   2  step   2100/4593  loss=5.0355  lr=1.70e-04  6.2 it/s
+  ep   2  step   2150/4593  loss=4.9537  lr=1.65e-04  6.2 it/s
+  ep   2  step   2200/4593  loss=4.4836  lr=1.60e-04  6.2 it/s
+  ep   2  step   2250/4593  loss=4.9824  lr=1.55e-04  6.2 it/s
+  ep   2  step   2300/4593  loss=4.7362  lr=1.50e-04  6.2 it/s
+  ep   2  step   2350/4593  loss=4.9191  lr=1.45e-04  6.2 it/s
+  ep   2  step   2400/4593  loss=4.6301  lr=1.39e-04  6.2 it/s
+  ep   2  step   2450/4593  loss=4.7371  lr=1.34e-04  6.2 it/s
+  ep   2  step   2500/4593  loss=4.7469  lr=1.29e-04  6.2 it/s
+  ep   2  step   2550/4593  loss=4.8929  lr=1.24e-04  6.2 it/s
+  ep   2  step   2600/4593  loss=4.7416  lr=1.19e-04  6.2 it/s
+  ep   2  step   2650/4593  loss=4.8081  lr=1.14e-04  6.2 it/s
+  ep   2  step   2700/4593  loss=4.7656  lr=1.09e-04  6.2 it/s
+  ep   2  step   2750/4593  loss=4.7031  lr=1.04e-04  6.2 it/s
+  ep   2  step   2800/4593  loss=5.0892  lr=9.94e-05  6.2 it/s
+  ep   2  step   2850/4593  loss=4.6328  lr=9.46e-05  6.2 it/s
+  ep   2  step   2900/4593  loss=4.8984  lr=8.98e-05  6.2 it/s
+  ep   2  step   2950/4593  loss=4.7100  lr=8.52e-05  6.2 it/s
+  ep   2  step   3000/4593  loss=4.8497  lr=8.06e-05  6.2 it/s
+    sample  'sixty-first session'          → '第五十十届会议'
+    sample  'oh, baby.'                    → '不有'
+    sample  '- lucinda?'                   → '- 是吗？'
+    sample  'introduction'                 → '一. 导言'
+    sample  'eric topol: the wireless future of medicine' → '第. 联合国会议'
+  ep   2  step   3050/4593  loss=4.9432  lr=7.61e-05  6.2 it/s
+  [epoch 2] val_loss=4.7938
+  ep   3  step   3100/4593  loss=4.8326  lr=7.16e-05  6.1 it/s
+  ep   3  step   3150/4593  loss=4.9879  lr=6.73e-05  6.1 it/s
+  ep   3  step   3200/4593  loss=4.6338  lr=6.31e-05  6.1 it/s
+  ep   3  step   3250/4593  loss=4.4992  lr=5.90e-05  6.1 it/s
+  ep   3  step   3300/4593  loss=4.8465  lr=5.49e-05  6.1 it/s
+  ep   3  step   3350/4593  loss=4.9668  lr=5.10e-05  6.1 it/s
+  ep   3  step   3400/4593  loss=4.5223  lr=4.72e-05  6.1 it/s
+  ep   3  step   3450/4593  loss=4.6005  lr=4.36e-05  6.1 it/s
+  ep   3  step   3500/4593  loss=4.7330  lr=4.00e-05  6.1 it/s
+  ep   3  step   3550/4593  loss=4.9351  lr=3.66e-05  6.1 it/s
+  ep   3  step   3600/4593  loss=4.4386  lr=3.33e-05  6.1 it/s
+  ep   3  step   3650/4593  loss=4.8598  lr=3.01e-05  6.1 it/s
+  ep   3  step   3700/4593  loss=4.6664  lr=2.71e-05  6.1 it/s
+  ep   3  step   3750/4593  loss=4.3755  lr=2.43e-05  6.1 it/s
+  ep   3  step   3800/4593  loss=4.6530  lr=2.15e-05  6.1 it/s
+  ep   3  step   3850/4593  loss=4.6020  lr=1.90e-05  6.1 it/s
+  ep   3  step   3900/4593  loss=4.5029  lr=1.65e-05  6.1 it/s
+  ep   3  step   3950/4593  loss=4.6127  lr=1.43e-05  6.1 it/s
+  ep   3  step   4000/4593  loss=4.5204  lr=1.22e-05  6.1 it/s
+    sample  'sixty-first session'          → '第五十十届会议'
+    sample  'oh, baby.'                    → '不有'
+    sample  '- lucinda?'                   → '- 你的吗？'
+    sample  'introduction'                 → '一. 导言'
+    sample  'eric topol: the wireless future of medicine' → '第. 第二届会议员会议'
+  ep   3  step   4050/4593  loss=4.6619  lr=1.02e-05  6.1 it/s
+  ep   3  step   4100/4593  loss=4.6440  lr=8.45e-06  6.1 it/s
+  ep   3  step   4150/4593  loss=4.5531  lr=6.83e-06  6.1 it/s
+  ep   3  step   4200/4593  loss=5.0081  lr=5.39e-06  6.1 it/s
+  ep   3  step   4250/4593  loss=4.5424  lr=4.11e-06  6.1 it/s
+  ep   3  step   4300/4593  loss=4.7901  lr=3.00e-06  6.1 it/s
+  ep   3  step   4350/4593  loss=4.6280  lr=2.07e-06  6.1 it/s
+  ep   3  step   4400/4593  loss=4.7182  lr=1.31e-06  6.1 it/s
+  ep   3  step   4450/4593  loss=4.5321  lr=7.17e-07  6.1 it/s
+  ep   3  step   4500/4593  loss=4.5216  lr=3.03e-07  6.1 it/s
+  ep   3  step   4550/4593  loss=4.5108  lr=6.49e-08  6.1 it/s
+  ep   3  step   4593/4593  loss=4.7606  lr=0.00e+00  6.1 it/s
+  [epoch 3] val_loss=4.6855
+[ckpt] saved → en2zh.pt
+
+--- sample translations ---
+  'hello'                   → '- 好'
+  'thank you'               → '你们'
+  'i love you'              → '我知道你'
+  'goodbye'                 → '第. 第 条'
+
+tdb_hooks attached: n_layer=6 n_head=8 n_embd=384 vocab=5952
+
+======================================================================
+TDB WALKTHROUGH — translate: 'hello'
+  target     = '你'  (expected first Chinese char)
+  distractor = '早'
+======================================================================
+
+[1] tokenize
+     0  id=0      tok='<en>'
+     1  id=14     tok='h'
+     2  id=6      tok='e'
+     3  id=16     tok='l'
+     4  id=16     tok='l'
+     5  id=8      tok='o'
+     6  id=1      tok='<zh>'
+
+[2] run_forward  (|Δattn|, |Δmlp|, entropy per layer)
+    L0  |resid|=  50.30  |Δattn|=  96.15  |Δmlp|=  54.61  H̄=0.381
+    L1  |resid|= 131.48  |Δattn|=  94.90  |Δmlp|=  65.13  H̄=0.438
+    L2  |resid|= 169.05  |Δattn|=  60.77  |Δmlp|=  70.97  H̄=0.646
+    L3  |resid|= 202.08  |Δattn|=  61.56  |Δmlp|=  51.02  H̄=0.769
+    L4  |resid|= 227.22  |Δattn|=  54.00  |Δmlp|=  60.22  H̄=0.943
+    L5  |resid|= 253.89  |Δattn|=  71.32  |Δmlp|=  86.59  H̄=0.766
+
+[3] attention_entropy_map  (low=sharp #,  high=diffuse .)
+      H0 H1 H2 H3 H4 H5 H6 H7
+L0    =  %  =  +  %  -  %  *
+L1    *  +  #  +  @  :  :  *
+L2    +  :  +  =  :  -  .  *
+L3    =  .  :  +  -  .  +  .
+L4          .        =  =  .
+L5    .  -  -  :  *  .  .  -
+
+[4] attention_distribution  (sharpest head L1 H4, entropy=0.011)
+    last-token attends to:
+      pos 1   tok='h'         p=0.995
+      pos 3   tok='l'         p=0.003
+      pos 0   tok='<en>'      p=0.001
+      pos 4   tok='l'         p=0.001
+      pos 6   tok='<zh>'      p=0.000
+
+[5] direction_of_interest  (direct effect of each layer onto target−distractor)
+    L0  attn→+ 5.067   mlp→+10.226
+    L1  attn→- 5.321   mlp→+ 0.879
+    L2  attn→- 1.466   mlp→- 1.335
+    L3  attn→+ 0.907   mlp→- 0.100
+    L4  attn→+ 0.978   mlp→- 0.113
+    L5  attn→- 1.338   mlp→+ 0.583
+
+[6] trace_upstream  (estimated total effect via real backward)
+    L0  estimated_total_effect=+3.4099
+    L1  estimated_total_effect=+0.9044
+    L2  estimated_total_effect=-0.5261
+    L3  estimated_total_effect=+0.0018
+    L4  estimated_total_effect=+0.5104
+    L5  estimated_total_effect=+0.0000
+
+[7] ablate_node  (MLP L0 — top positive direct-effect)
+    baseline logit_diff(target−distractor) = +3.2250
+    ablated  logit_diff(target−distractor) = +2.1199
+    Δ = -1.1051  (confirmed — ablating this layer hurts the target)
+
+tdb_hooks detached — model is back to native state.
+➜  llm-evaluate-debugger-mcp-server git:(main) ✗
+
