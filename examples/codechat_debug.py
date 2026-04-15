@@ -25,7 +25,7 @@ cfg.n_head = 4
 cfg.block_size = 64
 cfg.vocab_size = 1024
 cfg.grad_checkpoint = False
-model = GPT(cfg).to("cpu").eval()
+model = GPT(cfg).to("cpu").to(torch.bfloat16).eval()
 
 # 2. attach with preset='codechat' (blocks / attn / mlp / head)
 handle = tdb_hooks.attach(model, preset="codechat")
