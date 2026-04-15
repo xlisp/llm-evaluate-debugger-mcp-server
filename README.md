@@ -45,7 +45,7 @@ llm-evaluate-debugger-mcp/
 
 ```bash
 git clone https://github.com/xlisp/llm-evaluate-debugger-mcp-server && cd llm-evaluate-debugger-mcp-server
-pip install -e .                 # 安装 tdb_hooks
+pip install -e .                 # 安装 tdb_hooks (a800 pc: pip install -e . -i https://pypi.tuna.tsinghua.edu.cn/simple )
 pip install "mcp[cli]"
 ```
 
