@@ -11,7 +11,7 @@ from pathlib import Path
 
 import torch
 
-CODECHAT_ROOT = Path("/data/data/com.termux/files/home/pypro/CodeChat")
+CODECHAT_ROOT = Path("/mnt/openclaw/CodeChat")
 sys.path.insert(0, str(CODECHAT_ROOT))
 
 import tdb_hooks
