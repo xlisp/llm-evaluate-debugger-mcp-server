@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tdb-hooks"
+version = "0.1.0"
+description = "TDB-style transformer debugger hooks for any nanoGPT-like model. Pip-install and attach() — no source edits required."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "stevechan" }]
+dependencies = [
+    "torch>=2.0",
+]
+
+[project.optional-dependencies]
+mcp = ["mcp>=1.0"]
+
+[tool.setuptools.packages.find]
+include = ["tdb_hooks*"]
+exclude = ["examples*", "tests*"]
