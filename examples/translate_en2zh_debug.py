@@ -1,53 +1,65 @@
 """English → Chinese translation demo, debugged with tdb_hooks.
 
-This example is **self-contained**: it defines a small nanoGPT-style
-decoder-only transformer, trains it for a few hundred steps on a toy
-parallel corpus, and then runs the full 7-step TDB debug walkthrough
-on a real translation forward pass.
+Two modes in one script:
+
+* **toy** (default): 30-pair corpus, 4-layer model, trains in seconds on CPU.
+  Good for checking the debugger plumbing end-to-end.
+* **--large**: real parallel corpus (HF ``Helsinki-NLP/opus-100`` en-zh by
+  default, or a local TSV via ``--data-path``), 6-layer / 384-dim model,
+  tuned for a single 1080-class GPU. Produces enough circuitry that the TDB
+  walkthrough surfaces real layer specialization (not just memorization).
 
 Why this example exists
 -----------------------
 The other examples (``mathgpt_debug.py`` / ``codechat_debug.py``) require
-external project checkpoints. This file runs end-to-end on a CPU with
-nothing but ``torch`` and ``tdb_hooks`` installed, so it:
+external project checkpoints. This file runs end-to-end with just ``torch``
+and ``tdb_hooks``, so it:
 
-1. makes ``tdb_hooks`` easy to try for a newcomer,
-2. exercises every public API of the package (attach / capture /
-   ablate / direction / attn_probs / residual snapshots),
-3. gives the MCP server something real to point at when we iterate on
-   ``llm_debugger.py`` — run ``load_random(project="translate_en2zh")``
-   style flows against a model whose behaviour you can actually inspect.
+1. lets a newcomer try tdb_hooks without cloning MathGPT or CodeChat,
+2. exercises every public API (attach / capture / ablate / direction /
+   attn_probs / residual snapshots),
+3. gives the MCP server a reproducible target when iterating on
+   ``llm_debugger.py``.
 
-Usage::
+Usage
+-----
+::
 
-    pip install -e .
+    # quick smoke test (CPU, <1 min)
     python examples/translate_en2zh_debug.py
 
-Pass ``--skip-train`` to skip training and go straight to the debugger
-on a randomly-initialized model (useful when hacking on tdb_hooks
-itself — forward pass still exercises every hook).
+    # real training on OPUS-100 en-zh via HuggingFace datasets
+    pip install datasets
+    python examples/translate_en2zh_debug.py --large --save en2zh.pt
+
+    # use an already-trained checkpoint, skip straight to the debugger
+    python examples/translate_en2zh_debug.py --large --load en2zh.pt --skip-train
+
+    # bring your own parallel TSV (two columns: english\\tchinese)
+    python examples/translate_en2zh_debug.py --large --data-path corpus.tsv
 """
 from __future__ import annotations
 
 import argparse
-import math
 import sys
-from dataclasses import dataclass
+import time
+from collections import Counter
+from dataclasses import dataclass, asdict
 from pathlib import Path
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# Make tdb_hooks importable when the script is run from anywhere
+# Make tdb_hooks importable when the script is run from anywhere.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import tdb_hooks
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 1. Tiny parallel corpus — enough for the model to memorize patterns
+# 1. Toy parallel corpus — enough for the model to memorize patterns
 # ──────────────────────────────────────────────────────────────────────────────
-PAIRS: list[tuple[str, str]] = [
+TOY_PAIRS: list[tuple[str, str]] = [
     ("hello", "你好"),
     ("good morning", "早上好"),
     ("good night", "晚安"),
@@ -83,19 +95,88 @@ PAIRS: list[tuple[str, str]] = [
 SRC_TAG = "<en>"
 TGT_TAG = "<zh>"
 EOS = "<eos>"
+UNK = "<unk>"
+PAD = "<pad>"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 2. Character-level tokenizer that handles ASCII + CJK
+# 2. Corpus loaders
+# ──────────────────────────────────────────────────────────────────────────────
+def _looks_chinese(s: str) -> bool:
+    return any("\u4e00" <= c <= "\u9fff" for c in s)
+
+
+def _clean_pair(en: str, zh: str) -> tuple[str, str] | None:
+    en = en.strip().lower()
+    zh = zh.strip()
+    if not en or not zh:
+        return None
+    if not _looks_chinese(zh):
+        return None
+    return en, zh
+
+
+def load_tsv(path: str, max_pairs: int | None) -> list[tuple[str, str]]:
+    pairs: list[tuple[str, str]] = []
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) < 2:
+                continue
+            cleaned = _clean_pair(parts[0], parts[1])
+            if cleaned is None:
+                continue
+            pairs.append(cleaned)
+            if max_pairs and len(pairs) >= max_pairs:
+                break
+    print(f"[data] loaded {len(pairs):,} pairs from {path}")
+    return pairs
+
+
+def load_hf_dataset(name: str, config: str, max_pairs: int) -> list[tuple[str, str]]:
+    try:
+        from datasets import load_dataset
+    except ImportError as e:  # pragma: no cover
+        raise SystemExit(
+            "--large requires `pip install datasets` (or pass --data-path <tsv>)"
+        ) from e
+    split = f"train[:{max_pairs * 2}]"  # overshoot; we filter
+    print(f"[data] loading {name}/{config} split={split} ...")
+    ds = load_dataset(name, config, split=split)
+    pairs: list[tuple[str, str]] = []
+    for item in ds:
+        tr = item["translation"]
+        en = tr.get("en", "")
+        zh = tr.get("zh", "")
+        cleaned = _clean_pair(en, zh)
+        if cleaned is None:
+            continue
+        # Length cap so char-level block_size stays tractable.
+        if len(cleaned[0]) > 64 or len(cleaned[1]) > 32:
+            continue
+        pairs.append(cleaned)
+        if len(pairs) >= max_pairs:
+            break
+    print(f"[data] kept {len(pairs):,} filtered pairs")
+    return pairs
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 3. Character-level tokenizer with frequency-capped vocab + <unk>
 # ──────────────────────────────────────────────────────────────────────────────
 class CharTokenizer:
-    def __init__(self, pairs: list[tuple[str, str]]):
-        chars: set[str] = set()
+    def __init__(self, pairs: list[tuple[str, str]], max_vocab: int | None = None):
+        counter: Counter = Counter()
         for en, zh in pairs:
-            chars.update(en)
-            chars.update(zh)
-        specials = [SRC_TAG, TGT_TAG, EOS, "<pad>"]
-        vocab = specials + sorted(chars)
+            counter.update(en)
+            counter.update(zh)
+        specials = [SRC_TAG, TGT_TAG, EOS, UNK, PAD]
+        if max_vocab is not None:
+            keep = max_vocab - len(specials)
+            chars = [c for c, _ in counter.most_common(keep)]
+        else:
+            chars = sorted(counter.keys())
+        vocab = specials + chars
         self.stoi = {s: i for i, s in enumerate(vocab)}
         self.itos = {i: s for s, i in self.stoi.items()}
 
@@ -104,39 +185,49 @@ class CharTokenizer:
         return len(self.stoi)
 
     @property
-    def pad_id(self) -> int:
-        return self.stoi["<pad>"]
-
+    def pad_id(self) -> int: return self.stoi[PAD]
     @property
-    def eos_id(self) -> int:
-        return self.stoi[EOS]
+    def unk_id(self) -> int: return self.stoi[UNK]
+    @property
+    def eos_id(self) -> int: return self.stoi[EOS]
+    @property
+    def src_id(self) -> int: return self.stoi[SRC_TAG]
+    @property
+    def tgt_id(self) -> int: return self.stoi[TGT_TAG]
 
-    def encode(self, text: str, *, specials: list[str] = ()) -> list[int]:
-        ids = [self.stoi[s] for s in specials]
-        for ch in text:
-            ids.append(self.stoi[ch])
-        return ids
+    def ch(self, c: str) -> int:
+        return self.stoi.get(c, self.unk_id)
 
     def decode(self, ids: list[int]) -> str:
         out = []
         for i in ids:
-            tok = self.itos[int(i)]
-            if tok in (SRC_TAG, TGT_TAG, EOS, "<pad>"):
+            tok = self.itos.get(int(i), UNK)
+            if tok in (SRC_TAG, TGT_TAG, EOS, PAD):
                 continue
-            out.append(tok)
+            out.append(tok if tok != UNK else "·")
         return "".join(out)
 
     def format_pair(self, en: str, zh: str) -> list[int]:
-        ids = [self.stoi[SRC_TAG]]
-        ids += [self.stoi[c] for c in en]
-        ids += [self.stoi[TGT_TAG]]
-        ids += [self.stoi[c] for c in zh]
-        ids += [self.stoi[EOS]]
+        ids = [self.src_id]
+        ids += [self.ch(c) for c in en]
+        ids += [self.tgt_id]
+        ids += [self.ch(c) for c in zh]
+        ids += [self.eos_id]
         return ids
+
+    def state(self) -> dict:
+        return {"stoi": self.stoi}
+
+    @classmethod
+    def from_state(cls, state: dict) -> "CharTokenizer":
+        tok = cls.__new__(cls)
+        tok.stoi = dict(state["stoi"])
+        tok.itos = {i: s for s, i in tok.stoi.items()}
+        return tok
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 3. nanoGPT-style decoder transformer (matches the `nanogpt` preset)
+# 4. nanoGPT-style decoder transformer (matches the `nanogpt` preset)
 # ──────────────────────────────────────────────────────────────────────────────
 @dataclass
 class GPTConfig:
@@ -227,47 +318,110 @@ class GPT(nn.Module):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 4. Training
+# 5. Dataset encoding + training
 # ──────────────────────────────────────────────────────────────────────────────
-def build_batch(tok: CharTokenizer, pairs, block_size: int, device):
+def encode_corpus(pairs, tok: CharTokenizer, block_size: int
+                  ) -> tuple[torch.Tensor, torch.Tensor, int]:
     xs, ys = [], []
+    dropped = 0
     for en, zh in pairs:
         ids = tok.format_pair(en, zh)
-        ids = ids[: block_size + 1]
+        if len(ids) > block_size + 1:
+            dropped += 1
+            continue
         x = ids[:-1]
         y = ids[1:]
-        # Only learn to predict the Chinese side + EOS.
-        tgt_start = x.index(tok.stoi[TGT_TAG]) + 1
+        # y[i] is the target for input x[i]. When x[i] == <zh>, y[i] is the
+        # first Chinese char — so tgt_start must be the position of <zh>,
+        # NOT one past it.
+        tgt_start = x.index(tok.tgt_id)
         y_masked = [-100] * tgt_start + y[tgt_start:]
         pad = block_size - len(x)
         x = x + [tok.pad_id] * pad
         y_masked = y_masked + [-100] * pad
         xs.append(x)
         ys.append(y_masked)
-    return (torch.tensor(xs, device=device),
-            torch.tensor(ys, device=device))
+    if dropped:
+        print(f"[data] dropped {dropped} pairs that exceed block_size={block_size}")
+    X = torch.tensor(xs, dtype=torch.long)
+    Y = torch.tensor(ys, dtype=torch.long)
+    return X, Y, len(xs)
 
 
-def train(model, tok, pairs, *, steps=400, lr=3e-3, device="cpu"):
-    opt = torch.optim.AdamW(model.parameters(), lr=lr)
-    x, y = build_batch(tok, pairs, model.config.block_size, device)
+def train(model: GPT, tok: CharTokenizer, X: torch.Tensor, Y: torch.Tensor,
+          *, epochs: int, batch_size: int, lr: float, device: str,
+          val_frac: float = 0.02, log_every: int = 50,
+          sample_every: int = 500, sample_prompts: list[str] | None = None):
+    N = X.size(0)
+    n_val = max(1, int(N * val_frac)) if N > 200 else min(5, N)
+    perm = torch.randperm(N)
+    val_idx = perm[:n_val]
+    train_idx = perm[n_val:]
+    Xtr, Ytr = X[train_idx], Y[train_idx]
+    Xval, Yval = X[val_idx], Y[val_idx]
+    print(f"[train] N={N:,}  train={Xtr.size(0):,}  val={Xval.size(0):,}  "
+          f"batch={batch_size}  epochs={epochs}  lr={lr}")
+
     model.train()
-    for step in range(1, steps + 1):
-        opt.zero_grad()
-        _, loss = model(x, targets=y)
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-        opt.step()
-        if step == 1 or step % 50 == 0 or step == steps:
-            print(f"  step {step:4d}  loss={loss.item():.4f}")
+    opt = torch.optim.AdamW(model.parameters(), lr=lr, betas=(0.9, 0.95),
+                            weight_decay=0.01)
+    steps_per_epoch = max(1, Xtr.size(0) // batch_size)
+    total_steps = steps_per_epoch * epochs
+    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=total_steps)
+
+    step = 0
+    t0 = time.time()
+    for ep in range(1, epochs + 1):
+        perm = torch.randperm(Xtr.size(0))
+        for b in range(steps_per_epoch):
+            sel = perm[b * batch_size:(b + 1) * batch_size]
+            x = Xtr[sel].to(device, non_blocking=True)
+            y = Ytr[sel].to(device, non_blocking=True)
+            opt.zero_grad(set_to_none=True)
+            _, loss = model(x, targets=y)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            opt.step()
+            sched.step()
+            step += 1
+            if step == 1 or step % log_every == 0 or step == total_steps:
+                elapsed = time.time() - t0
+                print(f"  ep {ep:3d}  step {step:6d}/{total_steps}  "
+                      f"loss={loss.item():.4f}  "
+                      f"lr={sched.get_last_lr()[0]:.2e}  "
+                      f"{step/elapsed:.1f} it/s")
+            if sample_every and sample_prompts and step % sample_every == 0:
+                _print_samples(model, tok, sample_prompts, device)
+        # end-of-epoch val
+        with torch.no_grad():
+            model.eval()
+            val_losses = []
+            for b in range(0, Xval.size(0), batch_size):
+                x = Xval[b:b + batch_size].to(device)
+                y = Yval[b:b + batch_size].to(device)
+                _, vl = model(x, targets=y)
+                val_losses.append(vl.item())
+            vl_mean = sum(val_losses) / max(1, len(val_losses))
+            model.train()
+        print(f"  [epoch {ep}] val_loss={vl_mean:.4f}")
     model.eval()
 
 
+def _print_samples(model, tok, prompts, device):
+    model.eval()
+    with torch.no_grad():
+        for en in prompts:
+            zh = translate(model, tok, en)
+            print(f"    sample  {en!r:<30} → {zh!r}")
+    model.train()
+
+
 @torch.no_grad()
-def translate(model, tok, english: str, max_new: int = 20) -> str:
+def translate(model: GPT, tok: CharTokenizer, english: str, max_new: int = 32) -> str:
     device = next(model.parameters()).device
-    ids = [tok.stoi[SRC_TAG]] + [tok.stoi[c] for c in english] + [tok.stoi[TGT_TAG]]
+    ids = [tok.src_id] + [tok.ch(c) for c in english.lower()] + [tok.tgt_id]
     idx = torch.tensor([ids], device=device)
+    out_chars: list[int] = []
     for _ in range(max_new):
         logits = model(idx[:, -model.config.block_size:])
         if isinstance(logits, tuple):
@@ -275,14 +429,37 @@ def translate(model, tok, english: str, max_new: int = 20) -> str:
         nxt = int(logits[0, -1].argmax())
         if nxt == tok.eos_id:
             break
+        out_chars.append(nxt)
         idx = torch.cat([idx, torch.tensor([[nxt]], device=device)], dim=1)
-    out = idx[0].tolist()
-    tgt_start = out.index(tok.stoi[TGT_TAG]) + 1
-    return tok.decode(out[tgt_start:])
+    return tok.decode(out_chars)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 5. TDB-style 7-step debug walkthrough
+# 6. Checkpoint save / load
+# ──────────────────────────────────────────────────────────────────────────────
+def save_checkpoint(path: str, model: GPT, tok: CharTokenizer):
+    torch.save({
+        "cfg": asdict(model.config),
+        "tok": tok.state(),
+        "state_dict": model.state_dict(),
+    }, path)
+    print(f"[ckpt] saved → {path}")
+
+
+def load_checkpoint(path: str, device: str) -> tuple[GPT, CharTokenizer]:
+    blob = torch.load(path, map_location=device)
+    cfg = GPTConfig(**blob["cfg"])
+    model = GPT(cfg).to(device)
+    model.load_state_dict(blob["state_dict"])
+    model.eval()
+    tok = CharTokenizer.from_state(blob["tok"])
+    print(f"[ckpt] loaded ← {path}  "
+          f"(n_layer={cfg.n_layer} n_embd={cfg.n_embd} vocab={cfg.vocab_size})")
+    return model, tok
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 7. TDB-style 7-step debug walkthrough
 # ──────────────────────────────────────────────────────────────────────────────
 def attention_entropy_ascii(entropies: list[list[float]]) -> str:
     """entropies[layer][head] -> ASCII heatmap of attention entropy.
@@ -314,13 +491,13 @@ def tdb_walkthrough(model: GPT, tok: CharTokenizer, handle, *,
     print("=" * 70)
 
     device = next(model.parameters()).device
-    prompt_ids = [tok.stoi[SRC_TAG]] + [tok.stoi[c] for c in english] + [tok.stoi[TGT_TAG]]
+    prompt_ids = [tok.src_id] + [tok.ch(c) for c in english.lower()] + [tok.tgt_id]
     idx = torch.tensor([prompt_ids], device=device)
 
     # ── Step 1: tokenize ─────────────────────────────────────────────────────
     print("\n[1] tokenize")
     for i, t in enumerate(prompt_ids):
-        print(f"    {i:2d}  id={t:<3}  tok={tok.itos[t]!r}")
+        print(f"    {i:2d}  id={t:<5}  tok={tok.itos.get(t, UNK)!r}")
 
     # ── Step 2: forward + per-layer write magnitudes ─────────────────────────
     print("\n[2] run_forward  (|Δattn|, |Δmlp|, entropy per layer)")
@@ -354,12 +531,13 @@ def tdb_walkthrough(model: GPT, tok: CharTokenizer, handle, *,
           f"entropy={sharp_val:.3f})")
     print(f"    last-token attends to:")
     for p, i in zip(topk.values.tolist(), topk.indices.tolist()):
-        print(f"      pos {i:<2}  tok={tok.itos[prompt_ids[i]]!r:<8}  p={p:.3f}")
+        tok_str = tok.itos.get(prompt_ids[i], UNK)
+        print(f"      pos {i:<2}  tok={tok_str!r:<10}  p={p:.3f}")
 
     # ── Step 5: direction of interest = W_U[target] - W_U[distractor] ────────
     W_U = handle.lm_head.weight  # (vocab, n_embd) — tied with wte
-    tgt_id = tok.stoi[target_char]
-    dst_id = tok.stoi[distractor_char]
+    tgt_id = tok.ch(target_char)
+    dst_id = tok.ch(distractor_char)
     direction = (W_U[tgt_id] - W_U[dst_id]).detach().float()
     direction = direction / (direction.norm() + 1e-9)
 
@@ -376,13 +554,6 @@ def tdb_walkthrough(model: GPT, tok: CharTokenizer, handle, *,
 
     # ── Step 6: trace_upstream (grad of logit diff wrt each residual post-block) ─
     print("\n[6] trace_upstream  (estimated total effect via real backward)")
-    with tdb_hooks.capture() as cap3:
-        logits = model(idx)
-        if isinstance(logits, tuple):
-            logits = logits[0]
-        last = logits[0, -1]
-        logit_diff = last[tgt_id] - last[dst_id]
-    # Re-run forward with grad enabled so residuals stay in the graph.
     model.zero_grad(set_to_none=True)
     acts: dict[int, torch.Tensor] = {}
 
@@ -417,7 +588,6 @@ def tdb_walkthrough(model: GPT, tok: CharTokenizer, handle, *,
         if isinstance(logits, tuple):
             logits = logits[0]
         base_diff = float((logits[0, -1, tgt_id] - logits[0, -1, dst_id]).item())
-    # Pick the layer whose MLP direct_effect most supports the target.
     best_layer = max(range(handle.n_layer),
                      key=lambda i: cap2.layer_states[i].direct_effect_mlp or 0.0)
     with torch.no_grad(), tdb_hooks.ablate(mlp_layers=[best_layer]):
@@ -433,61 +603,137 @@ def tdb_walkthrough(model: GPT, tok: CharTokenizer, handle, *,
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 6. main
+# 8. main
 # ──────────────────────────────────────────────────────────────────────────────
-def main():
+def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--skip-train", action="store_true",
-                   help="skip training, debug a random-weights model")
-    p.add_argument("--steps", type=int, default=400)
-    p.add_argument("--prompt", type=str, default="hello",
+    p.add_argument("--large", action="store_true",
+                   help="scale model + use real parallel corpus (1080-class GPU)")
+    p.add_argument("--hf-dataset", default="Helsinki-NLP/opus-100")
+    p.add_argument("--hf-config", default="en-zh")
+    p.add_argument("--data-path", default=None,
+                   help="local TSV file (en<TAB>zh per line) — overrides HF")
+    p.add_argument("--max-pairs", type=int, default=None,
+                   help="cap corpus size (default: 200000 in --large, all in toy)")
+    p.add_argument("--max-vocab", type=int, default=None,
+                   help="cap tokenizer vocab (default: 8192 in --large)")
+    p.add_argument("--n-layer", type=int, default=None)
+    p.add_argument("--n-head", type=int, default=None)
+    p.add_argument("--n-embd", type=int, default=None)
+    p.add_argument("--block-size", type=int, default=None)
+    p.add_argument("--batch-size", type=int, default=None)
+    p.add_argument("--epochs", type=int, default=None)
+    p.add_argument("--steps", type=int, default=None,
+                   help="toy-mode: total gradient steps on the tiny batch")
+    p.add_argument("--lr", type=float, default=None)
+    p.add_argument("--save", default=None, help="save checkpoint to path")
+    p.add_argument("--load", default=None, help="load checkpoint from path")
+    p.add_argument("--skip-train", action="store_true")
+    p.add_argument("--prompt", default="hello",
                    help="English phrase to translate and debug on")
-    args = p.parse_args()
+    p.add_argument("--device", default=None,
+                   help="cpu / cuda / cuda:0 (default: auto)")
+    return p.parse_args()
 
+
+def main():
+    args = parse_args()
     torch.manual_seed(0)
-    device = "cpu"
 
-    tok = CharTokenizer(PAIRS)
-    print(f"vocab_size = {tok.vocab_size}  "
-          f"(specials + ascii + CJK chars from {len(PAIRS)} pairs)")
+    device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"[env] device={device}  "
+          f"torch={torch.__version__}  "
+          f"cuda={torch.cuda.is_available()}")
 
-    cfg = GPTConfig(
-        vocab_size=tok.vocab_size,
-        block_size=32,
-        n_layer=4,
-        n_head=4,
-        n_embd=128,
-    )
-    model = GPT(cfg).to(device)
-    n_params = sum(p.numel() for p in model.parameters())
-    print(f"model: n_layer={cfg.n_layer} n_head={cfg.n_head} "
-          f"n_embd={cfg.n_embd}  params={n_params:,}")
-
-    if not args.skip_train:
-        print(f"\n--- training {args.steps} steps on {len(PAIRS)} pairs ---")
-        train(model, tok, PAIRS, steps=args.steps, device=device)
+    # ── load or train ────────────────────────────────────────────────────────
+    if args.load:
+        model, tok = load_checkpoint(args.load, device)
+        cfg = model.config
     else:
-        print("\n--- skipping training (random weights) ---")
+        # 1) corpus
+        if args.data_path:
+            pairs = load_tsv(args.data_path, args.max_pairs)
+            if not pairs:
+                raise SystemExit("no usable pairs from --data-path")
+        elif args.large:
+            max_pairs = args.max_pairs or 200_000
+            pairs = load_hf_dataset(args.hf_dataset, args.hf_config, max_pairs)
+        else:
+            pairs = TOY_PAIRS
+            print(f"[data] toy corpus: {len(pairs)} pairs")
 
+        # 2) tokenizer
+        max_vocab = args.max_vocab or (8192 if args.large else None)
+        tok = CharTokenizer(pairs, max_vocab=max_vocab)
+        print(f"[tok] vocab_size={tok.vocab_size}")
+
+        # 3) model
+        cfg = GPTConfig(
+            vocab_size=tok.vocab_size,
+            block_size=args.block_size or (128 if args.large else 32),
+            n_layer=args.n_layer or (6 if args.large else 4),
+            n_head=args.n_head or (8 if args.large else 4),
+            n_embd=args.n_embd or (384 if args.large else 128),
+        )
+        model = GPT(cfg).to(device)
+        n_params = sum(p.numel() for p in model.parameters())
+        print(f"[model] n_layer={cfg.n_layer} n_head={cfg.n_head} "
+              f"n_embd={cfg.n_embd} block={cfg.block_size}  "
+              f"params={n_params:,}")
+
+        # 4) train
+        if not args.skip_train:
+            X, Y, N = encode_corpus(pairs, tok, cfg.block_size)
+            if args.large:
+                epochs = args.epochs or 3
+                batch_size = args.batch_size or 64
+                lr = args.lr or 3e-4
+                sample_prompts = [en for en, _ in pairs[:5]]
+                train(model, tok, X, Y,
+                      epochs=epochs, batch_size=batch_size,
+                      lr=lr, device=device,
+                      sample_every=1000, sample_prompts=sample_prompts)
+            else:
+                # Toy mode: keep behaviour simple & fast — one batch, many steps
+                steps = args.steps or 400
+                lr = args.lr or 3e-3
+                opt = torch.optim.AdamW(model.parameters(), lr=lr)
+                x = X.to(device); y = Y.to(device)
+                model.train()
+                for step in range(1, steps + 1):
+                    opt.zero_grad()
+                    _, loss = model(x, targets=y)
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    opt.step()
+                    if step == 1 or step % 50 == 0 or step == steps:
+                        print(f"  step {step:4d}  loss={loss.item():.4f}")
+                model.eval()
+        else:
+            print("[train] skipped")
+
+        if args.save:
+            save_checkpoint(args.save, model, tok)
+
+    # ── sample translations ──────────────────────────────────────────────────
     print("\n--- sample translations ---")
-    for en in ["hello", "thank you", "i love you", "goodbye", args.prompt]:
-        print(f"  {en!r:<20} → {translate(model, tok, en)!r}")
+    demo_prompts = ["hello", "thank you", "i love you", "goodbye"]
+    if args.prompt and args.prompt not in demo_prompts:
+        demo_prompts.append(args.prompt)
+    for en in demo_prompts:
+        print(f"  {en!r:<25} → {translate(model, tok, en)!r}")
 
-    # Attach tdb_hooks — the model matches the `nanogpt` preset exactly.
+    # ── attach debugger ──────────────────────────────────────────────────────
     handle = tdb_hooks.attach(model, preset="nanogpt")
     print(f"\ntdb_hooks attached: n_layer={handle.n_layer} n_head={handle.n_head} "
           f"n_embd={handle.n_embd} vocab={handle.vocab_size}")
 
-    # Pick a target/distractor pair from the training data so the signal is real.
-    english = args.prompt if args.prompt in {e for e, _ in PAIRS} else "hello"
-    expected_zh = next(zh for e, zh in PAIRS if e == english)
-    target_char = expected_zh[0]
-    # Distractor = first char of a *different* translation.
-    distractor_char = next(zh for e, zh in PAIRS if e != english)[0]
-    if distractor_char == target_char:
-        distractor_char = next(zh for e, zh in PAIRS
-                               if zh[0] != target_char)[0]
-
+    # Pick target/distractor from vocab in a model-agnostic way.
+    english = args.prompt
+    # If the prompt is in our demo set, use its known translation's first char
+    # as the target. Otherwise, pick the model's own greedy prediction as the
+    # target and a plausible distractor.
+    target_char, distractor_char = _pick_target_distractor(model, tok, english)
     tdb_walkthrough(model, tok, handle,
                     english=english,
                     target_char=target_char,
@@ -495,6 +741,41 @@ def main():
 
     handle.detach()
     print("\ntdb_hooks detached — model is back to native state.")
+
+
+def _pick_target_distractor(model, tok, english: str) -> tuple[str, str]:
+    """Pick a (target, distractor) pair from real Chinese characters in the
+    tokenizer, using the model's own distribution if no ground truth.
+    """
+    # See if english is one of the toy pairs first.
+    for e, zh in TOY_PAIRS:
+        if e == english.strip().lower():
+            tgt = zh[0]
+            # distractor: first char of a different Chinese string
+            for _, zh2 in TOY_PAIRS:
+                if zh2[0] != tgt:
+                    return tgt, zh2[0]
+    # Otherwise: let the model choose. Take top-1 prediction as target,
+    # a high-probability but different Chinese char as distractor.
+    device = next(model.parameters()).device
+    with torch.no_grad():
+        ids = [tok.src_id] + [tok.ch(c) for c in english.lower()] + [tok.tgt_id]
+        logits = model(torch.tensor([ids], device=device))
+        if isinstance(logits, tuple):
+            logits = logits[0]
+        probs = logits[0, -1].softmax(-1)
+    order = probs.argsort(descending=True).tolist()
+    tgt = None
+    dst = None
+    for i in order:
+        ch = tok.itos.get(i, UNK)
+        if len(ch) == 1 and "\u4e00" <= ch <= "\u9fff":
+            if tgt is None:
+                tgt = ch
+            elif ch != tgt:
+                dst = ch
+                break
+    return (tgt or "你"), (dst or "早")
 
 
 if __name__ == "__main__":
