@@ -44,9 +44,9 @@ llm-evaluate-debugger-mcp/
 ## 安装
 
 ```bash
-cd /data/data/com.termux/files/home/pypro/llm-evaluate-debugger-mcp
+git clone https://github.com/xlisp/llm-evaluate-debugger-mcp-server && cd llm-evaluate-debugger-mcp-server
 pip install -e .                 # 安装 tdb_hooks
-pip install -e '.[mcp]'          # 顺便装 MCP Server 依赖
+pip install "mcp[cli]"
 ```
 
 > 目标项目（MathGPT / CodeChat …）**不需要任何源码改动**。
